@@ -1,0 +1,247 @@
+library(haven)
+library(repurrrsive)
+library(purrr)
+library(stringr)
+library(broom)
+library(broom)
+library(data.table)
+library(readr)
+library(tidyverse)
+library(readxl)
+library(widyr)
+library(psych)
+library(qdap)
+
+##Importing GENR genetic data
+GENR_alzheimers_snps <- fread("generationR_snps_alzheimer.raw")
+principal_components <- fread("PCA_SelectionGWAv3_july2015.csv")
+Snps_freqs <- fread("Bristol.frq")
+five_principal_components <- principal_components[,c(1, 6:10)]
+
+
+colnames(five_principal_components) <- c("ID","PC1","PC2","PC3","PC4","PC5")
+genetic_data <- merge(GENR_alzheimers_snps,five_principal_components,by.x="IID",by.y="ID")
+colnames(genetic_data)[1] <-  "IDC"
+
+
+
+# the cortical data
+Brain_structure_cortical <- fread("f9_freesurfer_09dec2016_aparc_stats_pull06june2017.csv")
+
+# separate cortical areas and the mean thickness for left and right hemisphere
+thickness_left_hemisphere <- Brain_structure_cortical[, c(1, seq(3,102,3), 104)]
+thickness_right_hemisphere <- Brain_structure_cortical[, c(1, seq(106,205,3), 207)]
+
+
+# the MRI quality descriptive data
+Brain_core_distribution <- fread("CHILDMRI_Core_data_distribution_28112017.csv")
+
+# the demographic data
+Brain_sex <- fread("CHILD-ALLGENERALDATA_07072020.csv")
+
+nrow(Brain_core_distribution)
+
+
+# the select the subjects with good quality brain data based on GenR criteria
+brain_alldata <- Brain_core_distribution[Brain_core_distribution$MRI_consent == 1 & Brain_core_distribution$t1_asset_nii == 0  
+                                         & Brain_core_distribution$braces_mri_f9 == 0 & Brain_core_distribution$exclude_incidental == 0 
+                                         & Brain_core_distribution$usable_fs_f9_final == 1 & Brain_core_distribution$qdecLgi_f9 == 1, ]
+
+nrow(brain_alldata) # 3170
+
+Brain_all_demo <- merge(brain_alldata, Brain_sex[, c("IDC", "GENDER")], by.x="IDC", by.y= "IDC")
+nrow(Brain_all_demo)
+
+
+cortical_structures <- merge(thickness_left_hemisphere,thickness_right_hemisphere,by="IDC")
+nrow(cortical_structures)
+
+##Remove GENR phenotypes with value of 0
+is.na(cortical_structures) <- !cortical_structures
+
+##Merge with demographic information
+
+cortical_structures_final <- merge(cortical_structures, Brain_all_demo[, c("IDC", "AgeChildBrainMRIF9","GENDER")], by ="IDC")
+dim(cortical_structures_final)
+
+
+# new definition: mean across left and right hemisphere, 36 the mean thickness for left and 71 is the mean thickness for right.
+cortical_structures_final$mean_thickness <- rowMeans(cortical_structures_final[, c(36,71)])  
+
+
+##Merge genetic and imaging datasets 
+cortical_structures_snps <- merge(genetic_data,cortical_structures_final,by="IDC")
+nrow(cortical_structures_snps)
+
+
+##select ROIs
+colnames(cortical_structures_snps)
+cortical_structures2 <- cortical_structures_snps[,c(36:69, 71:104,108)] # 34 cortical, left and right, 1 mean thickness 
+
+
+##calculate mean for cortical structures
+out_cort <-t(cortical_structures2) %>%
+  data.frame() %>%
+  group_by(., id = gsub('^[rl]h_', '', rownames(.))) %>% ##replace beginning that starts with r or l with nothing and group by means group them if they have the same name
+  summarise_all(mean) %>%
+  data.frame() %>%
+  column_to_rownames(var = 'id') %>%
+  t( )
+
+
+
+##########################################################################################################################################
+##standardise mean measures
+##########################################################################################################################################
+
+##standardise mean measures - cortical
+colnames(out_cort)
+data.standardised_cortical <- scale(out_cort)   ### why select certain columns? 
+data.standardised_cortical <- as.data.frame(data.standardised_cortical)
+setnames(data.standardised_cortical,paste0(names(data.standardised_cortical),"_standardised"))
+
+
+##########################################################################################################################################
+#bind standardised measures with SNPs and covariates
+##########################################################################################################################################
+
+cortical_structures_snps2 <- cbind(cortical_structures_snps[,c(1,7:35,106:107)], data.standardised_cortical)
+
+#########################################################################################################################################
+##remove (/ from rsids)
+#########################################################################################################################################
+names(cortical_structures_snps2) <- gsub("\\(..)", "", names(cortical_structures_snps2))
+
+#########################################################################################################################################
+##Counts
+#########################################################################################################################################
+#cortical_structures_area_count <- cortical_structures_snps2[!is.na(cortical_structures_snps2$sex) & !is.na(cortical_structures_snps2$age_months) & !is.na(cortical_structures_snps2$PC1) & !is.na(cortical_structures_snps2$total_surface_area_standardised)]
+cortical_structures_thickness_count <- cortical_structures_snps2[!is.na(cortical_structures_snps2$GENDER) & 
+                                                                   !is.na(cortical_structures_snps2$AgeChildBrainMRIF9) & 
+                                                                   !is.na(cortical_structures_snps2$PC1) & 
+                                                                   !is.na(cortical_structures_snps2$mean_thickness_standardised)]
+
+names(cortical_structures_thickness_count)
+descriptive_stats_cortical_thickness <- pairwiseCount(cortical_structures_thickness_count[,c(2:25)], # genetic data
+                                                      cortical_structures_thickness_count[,c(33:46, 48:67)]) # cortical thickness data
+descriptive_stats_cortical_thickness <- t(descriptive_stats_cortical_thickness)
+descriptive_stats_cortical_thickness_reshaped <-setNames(melt(descriptive_stats_cortical_thickness),c('Outcome','SNP','N'))
+
+write.table(descriptive_stats_cortical_thickness_reshaped,"descriptive_stats_cortical_thickness_GENR_formatted.csv",row.names=FALSE, quote=FALSE,sep=",")
+
+colnames(cortical_structures_thickness_count)
+##by allele
+counts <- sapply(cortical_structures_thickness_count[,2:25], function(x) table(x))
+counts_reshaped <- melt(counts)
+colnames(counts_reshaped) <- c("No. of risk alleles", "Sample","SNP")
+write.table(counts_reshaped,"New mean thickness/cortical_GENR_by_allele.csv",row.names=FALSE, quote = FALSE,sep=",")
+
+
+#############################################################################################################################################
+##RUN REGRESSION MODELS
+############################################################################################################################################
+
+
+#############################################################################################################################################
+#CORTICAL THICKNESS
+##############################################################################################################################################
+
+grep("_thickavg_f9_standardised", names(cortical_structures_snps2))
+ivs_vec <- names(cortical_structures_snps2)[c(2:25)]
+dvs_vec <- names(cortical_structures_snps2)[c(33:46, 48:67)]
+covs_vec <- paste("AgeChildBrainMRIF9","+","mean_thickness_standardised","+","GENDER","+","PC1","+","PC2","+","PC3","+","PC4", "+","PC5")
+
+
+ivs <- paste0(" ~ ", ivs_vec,"+",covs_vec)
+dvs_ivs <- unlist(lapply(ivs, function(x) paste0(dvs_vec, x))) ##given a list x, unlist simplifies to produce a vector
+formulas <- lapply(dvs_ivs, stats::formula)
+
+
+lm_results <- lapply(formulas, function(x) {
+  lm(x, data=cortical_structures_snps2)
+})
+
+# Creating / combining results
+tidy_results <- lapply(lm_results, broom::tidy)
+dv_list <- as.list(stringi::stri_extract_first_words(dvs_ivs))
+tidy_results <- Map(cbind, dv_list, tidy_results)
+
+##standardized_results <- lapply(lm_results, function(x) coef(lm.beta::lm.beta(x)))
+##combined_results <- Map(cbind, tidy_results, standardized_results)
+
+# subset results just for MR
+x <- lapply(tidy_results,"[",2,,drop=FALSE)
+rs_identifiers <- Map(cbind,dv_list,x)
+rs <- Map(as.data.frame,rs_identifiers)
+dfrData_rs <- rbindlist(rs,use.names=F) 
+dfrData_rs$`dots[[1L]][[1L]]`<-NULL
+colnames(dfrData_rs) <- c("Outcome", "SNP", "BETA", "SE", "Statistic", "P")
+combined_results <- dfrData_rs
+
+setwd("~/Alzheimer_data_GenR/Data")
+alzheimers_alleles <- read_excel("alzheimers_allele_assignments_to_use_genr3.xls")
+mr_dataset <- merge(combined_results,alzheimers_alleles,by.x="SNP",by.y="ID")
+mr_dataset <- mr_dataset[,c(1:7,9:11)]
+colnames(mr_dataset) <- c("Term","Outcome","BETA","SE","Statistic","P","SNP","A1","A2","EAF")
+
+setwd("~/Alzheimer_data_GenR/Data/New mean thickness")
+sample <- read.csv("descriptive_stats_cortical_thickness_GENR_formatted.csv")
+mr_dataset <- merge(mr_dataset,sample,by.x=c("Outcome","Term"), by.y=c("Outcome","SNP"))
+mr_dataset <- mr_dataset[order(mr_dataset$Outcome),]
+mr_dataset <- merge(mr_dataset,Snps_freqs,by="SNP")
+
+mr_dataset <- mr_dataset[, c(3,2,4:7,1,8:16)] # reorder the data
+colnames(mr_dataset)[c(8:9, 13:14)] <- c("A1","A2","A1.genr", "A2.genr")
+
+
+write.csv(mr_dataset, "GENR_brain_gwas_cortical.csv",row.names = F)
+by(mr_dataset, mr_dataset$Outcome, FUN=function(i) write.table(i, paste0(i$Outcome[1], ".txt"),quote = F,row.names = F))
+
+
+#############################################################################################################################################
+#MEAN THICKNESS
+##############################################################################################################################################
+
+####### mean thickcness
+ivs_vec <- names(cortical_structures_snps2)[c(2:25)]
+dvs_vec <- names(cortical_structures_snps2)[47] # mean thickcness
+covs_vec <- paste("AgeChildBrainMRIF9","+","GENDER","+","PC1","+","PC2","+","PC3","+","PC4","+","PC5")
+
+ivs <- paste0(" ~ ", ivs_vec,"+",covs_vec)
+dvs_ivs <- unlist(lapply(ivs, function(x) paste0(dvs_vec, x))) ##given a list x, unlist simplifies to produce a vector
+formulas <- lapply(dvs_ivs, stats::formula)
+
+lm_results <- lapply(formulas, function(x) {
+  lm(x, data= cortical_structures_snps2)
+})
+
+# Creating / combining results
+tidy_results <- lapply(lm_results, broom::tidy)
+dv_list <- as.list(stringi::stri_extract_first_words(dvs_ivs))
+tidy_results <- Map(cbind, dv_list, tidy_results)
+
+# subset results just for MR
+
+x <- lapply(tidy_results,"[",2,,drop=FALSE)
+rs_identifiers <- Map(cbind,dv_list,x)
+rs <- Map(as.data.frame,rs_identifiers)
+dfrData_rs <- rbindlist(rs,use.names = F); 
+dfrData_rs$`dots[[1L]][[1L]]`<-NULL
+colnames(dfrData_rs) <- c("Outcome", "SNP", "BETA", "SE", "Statistic", "P")
+combined_results <- dfrData_rs
+
+
+mr_dataset <- merge(combined_results,alzheimers_alleles,by.x="SNP",by.y="ID")
+mr_dataset <- mr_dataset[,c(1:7,9:11)]
+colnames(mr_dataset) <- c("Term","Outcome","BETA","SE","Statistic","P","SNP","A1","A2","EAF")
+
+mr_dataset <- merge(mr_dataset,Snps_freqs,by="SNP")
+mr_dataset <- mr_dataset[, c(3,2,4:7,1,8:15)] # reorder the data
+colnames(mr_dataset)[c(8:9, 13:14)] <- c("A1","A2","A1.genr", "A2.genr")
+
+setwd("~/Alzheimer_data_GenR/Data/mean thickness")
+write.csv(mr_dataset, "GENR_brain_mean_thickness.csv",row.names = F)
+by(mr_dataset, mr_dataset$Outcome, FUN=function(i) write.table(i, paste0(i$Outcome[1], ".txt"),quote = F,row.names = F))
+
+
+
