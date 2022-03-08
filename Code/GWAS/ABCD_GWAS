@@ -1,0 +1,52 @@
+#!/bin/bash
+#PBS -r n
+#
+#PBS -l walltime=70:00:00,nodes=1:ppn=8
+#PBS -j oe
+#PBS -o job.report.BOLTLMM_alpha_thickness3
+#
+# --------------------------------------------
+#
+## Script for running GWAS using BOLT-LMM
+
+bolt="/cm/shared/apps/Bolt-LMM-2.3/BOLT-LMM_v2.3/bolt"
+
+
+echo "************************************************************"
+echo "Started at: "`date +"%m/%d/%Y %H:%M:%S"`
+echo "************************************************************"
+
+exclusionsDir="~/PRS_AD_BRAIN_STRUCTURES/prs_alzheimers_brain_structures/Data/ABCD/Genetic/GWAS/Exclusions"
+genoDir="~/PRS_AD_BRAIN_STRUCTURES/prs_alzheimers_brain_structures/Data/ABCD/Genetic/Imputed"
+phenoDir="~/PRS_AD_BRAIN_STRUCTURES/prs_alzheimers_brain_structures/Data/ABCD/Genetic/GWAS/Phenofiles"
+covarDir="~/PRS_AD_BRAIN_STRUCTURES/prs_alzheimers_brain_structures/Data/ABCD/Genetic/GWAS/Covariates"
+outputDir="~/PRS_AD_BRAIN_STRUCTURES/prs_alzheimers_brain_structures/Data/ABCD/Genetic/GWAS/Output"
+
+pheno=("smri_thick_cdk_paracn_standardised" "smri_thick_cdk_parahpal_standardised" \
+"smri_thick_cdk_parsobis_standardised" "smri_thick_cdk_parsopc_standardised" \
+"smri_thick_cdk_parstgris_standardised")
+
+for i in ${pheno[@]}; do
+$bolt --lmm \
+--bim $genoDir/annotated_chr{1:22}.bim \
+--bed $genoDir/annotated_chr{1:22}.bed \
+--fam $genoDir/annotated_chr1.fam \
+--remove=$exclusionsDir/all_individual_exclusions.txt \
+--phenoFile=$phenoDir/cortical_thickness_abcd.txt \
+--phenoCol=${i} \
+--modelSnps="~/PRS_AD_BRAIN_STRUCTURES/prs_alzheimers_brain_structures/Data/ABCD/Genetic/BOLT/w_hm3.noMHC.snplist.999999.txt" \
+--covarFile="$covarDir/ABCD_10PCs_meanthickness.txt" \
+--qCovarCol=PC{1:10} \
+--qCovarCol=SEX \
+--qCovarCol=AGE \
+--qCovarCol=mean_thickness_standardised \
+--LDscoresFile="~/PRS_AD_BRAIN_STRUCTURES/prs_alzheimers_brain_structures/Data/ABCD/Genetic/BOLT/LDSCORE.1000G_EUR.tab.gz" \
+--LDscoresMatchBp \
+--geneticMapFile="~/PRS_AD_BRAIN_STRUCTURES/prs_alzheimers_brain_structures/Data/ABCD/Genetic/BOLT/genetic_map_hg19_withX.txt.gz" \
+--numThreads=10 \
+--statsFile=$outputDir/${i}.bolt_summary_stats.txt \
+--verboseStats;
+done
+
+
+echo "Ended at: "`date +"%m/%d/%Y %H:%M:%S"`
