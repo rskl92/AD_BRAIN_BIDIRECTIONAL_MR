@@ -1,0 +1,298 @@
+############################################################################################################################################
+#INSTALL PACKAGES
+############################################################################################################################################
+install.packages("stringr")
+install.packages("broom")
+install.packages("lm.beta")
+install.packages("purrr")
+install.packages("repurrrsive")
+install.packages("tidyverse")
+
+############################################################################################################################################
+#LOAD PACKAGES
+############################################################################################################################################
+
+library(haven)
+library(dplyr)
+library(repurrrsive)
+library(purrr)
+library(stringr)
+library(broom)
+library(broom)
+library(data.table)
+library(readr)
+library(tidyverse)
+library(readxl)
+library(psych)
+library(data.table)
+
+############################################################################################################################################
+##Read in Alzheimer's SNPs in ALSPAC children
+############################################################################################################################################
+
+alz_snps <- fread("~/BRAIN_ANALYSES/ALSPAC/DATA/ALZHEIMERS_GWAS/alspac_alzheimers_snps_children_KUNKLE.raw")
+alz_snps$aln <- as.numeric(str_extract(alz_snps$FID, "[0-9]+"))
+alz_snps$qlet <- (str_extract(alz_snps$FID, "[aA-zZ]+"))
+##Read in genetic principal components
+PCs <- read_table2("~/ALSPAC_brain/PCs/data.eigenvec", col_names = FALSE)
+PCs <- PCs[,2:7]
+names(PCs)[-1]<- paste0('PC',1:(ncol(PCs)-1))
+PCs$aln<- as.numeric(str_extract(PCs$X2, "[0-9]+"))
+PCs$qlet <- (str_extract(PCs$X2, "[aA-zZ]+"))
+
+############################################################################################################################################
+##Merge SNPs and principal components
+############################################################################################################################################
+merge_genetic <- merge(alz_snps,PCs,by=c("aln","qlet"))
+
+############################################################################################################################################
+##Import MRI data
+############################################################################################################################################
+ALSPAC_MRI_extraction_data_alnqlet <- read_dta("~/ALSPAC_brain/ALSPAC-MRI_extraction_data_alnqlet.dta")
+
+############################################################################################################################################
+##3 B individuals, 2 of which do not have an A- remove 1 from pair row 50
+############################################################################################################################################
+which(ALSPAC_MRI_extraction_data_alnqlet$aln==31365 & ALSPAC_MRI_extraction_data_alnqlet$qlet=="B")
+ALSPAC_MRI_extraction_data_alnqlet<- ALSPAC_MRI_extraction_data_alnqlet[-50,]
+ALSPAC_MRI_extraction_data_alnqlet[ALSPAC_MRI_extraction_data_alnqlet$aln==33082,] <- NA ##has all zero values
+
+############################################################################################################################################
+##subset dataset into cortical and subcortical for separate qc filtering 
+############################################################################################################################################
+
+subcortical_structures <- ALSPAC_MRI_extraction_data_alnqlet[,c("aln","qlet","age_months","sex","hand","PE_PLIKScat","PE_status","linden_group","linden_groupstatus", "case","study","llatvent","rlatvent","lthal","rthal","lcaud","rcaud","lput","rput","lpal","rpal","lhippo","rhippo","lamyg","ramyg","laccumb","raccumb","icv","subcorticalqc")]
+cortical_structures <- ALSPAC_MRI_extraction_data_alnqlet[, -which(names(ALSPAC_MRI_extraction_data_alnqlet) %in% c("llatvent","rlatvent","lthal","rthal","lcaud","rcaud","lput","rput","lpal","rpal","lhippo","rhippo","lamyg","ramyg","laccumb","raccumb","subcorticalqc"))]
+
+############################################################################################################################################
+##Remove duplicates (many participants attended more than 1 ALSPAC substudy)
+############################################################################################################################################
+cortical_structures <- cortical_structures[!duplicated(cortical_structures[c("aln","qlet","r_lingual_thickavg","l_cuneus_thickavg")]),] ##24 dups
+subcortical_structures <- subcortical_structures[!duplicated(subcortical_structures[c("aln","qlet","lamyg","rhippo","rcaud")]),]
+
+############################################################################################################################################
+##Keep controls of the ALSPAC psychosis substudy
+############################################################################################################################################
+ALSPAC_psych<- ALSPAC_MRI_extraction_data_alnqlet[which(ALSPAC_MRI_extraction_data_alnqlet$PE_status==1), ]
+cortical_structures <- cortical_structures[!cortical_structures$aln %in% ALSPAC_psych$aln,] 
+subcortical_structures <- subcortical_structures[!subcortical_structures$aln %in% ALSPAC_psych$aln,] 
+
+############################################################################################################################################
+##FILTER BASED ON VISUAL INSPECTION QC 
+############################################################################################################################################
+cortical_structures[which(cortical_structures$corticalqc==2),c(12:79)]<- NA
+subcortical_structures[which(subcortical_structures$subcorticalqc==2),12:27] <- NA
+
+############################################################################################################################################
+##select columns
+############################################################################################################################################
+ 
+subcortical_structures2 <- subcortical_structures[,c(12:28)]
+cortical_structures2 <- cortical_structures[,c(12:81)]
+colnames(cortical_structures2)[69] <- "l_thickness"
+colnames(cortical_structures2)[70] <- "r_thickness"
+
+############################################################################################################################################
+##calculate mean for cortical structures
+############################################################################################################################################
+
+out_cort<- t(cortical_structures2) %>%
+data.frame() %>%
+group_by(., id = gsub('^[rl]_', '', rownames(.))) %>% ##replace beginning that starts with r or l with nothing and group by means group them if they have the same name
+summarise_all(mean) %>%
+data.frame() %>%
+column_to_rownames(var = 'id') %>%
+t()
+
+############################################################################################################################################
+##add descriptive stats variables
+############################################################################################################################################
+out2_cort <- cbind(cortical_structures[,c(1:11)], out_cort)
+
+############################################################################################################################################
+##standardise mean measures
+############################################################################################################################################
+
+data.standardised_cortical <- as.data.frame(sapply(out2_cort[,c(12:46)], scale))
+names(data.standardised_cortical) <- sapply(names(data.standardised_cortical), function(x) {
+  y <- paste0(x, "_standardised")
+}
+)
+
+############################################################################################################################################
+##bind standardised cortical measures with main cortical dataset
+############################################################################################################################################
+
+cortical_structures <- cbind(out2_cort[1:11],data.standardised_cortical)
+
+
+############################################################################################################################################
+##calculate mean for subcortical structures
+############################################################################################################################################
+
+out_subcort<-t(subcortical_structures2) %>%
+data.frame() %>%
+group_by(., id = gsub('^[rl]', '', rownames(.))) %>% ##replace beginning that starts with r or l with nothing and group by means group them if they have the same name
+summarise_all(mean) %>%
+data.frame() %>%
+column_to_rownames(var = 'id') %>%
+t()
+
+############################################################################################################################################
+##add descriptive stats variables
+############################################################################################################################################
+
+out2_subcort <- cbind(subcortical_structures[,c(1:11)], out_subcort)
+
+############################################################################################################################################
+##standardise mean measures
+############################################################################################################################################
+
+data.standardised_subcortical <- as.data.frame(sapply(out2_subcort[,12:20], scale))
+names(data.standardised_subcortical) <- sapply(names(data.standardised_subcortical), function(x) {
+  y <- paste0(x, "_standardised")
+}
+)
+
+############################################################################################################################################
+##bind standardised measures with main cortical dataset
+############################################################################################################################################
+subcortical_structures <- cbind(out2_subcort[1:11],data.standardised_subcortical)
+
+############################################################################################################################################
+##merge subcortical and genetic data
+############################################################################################################################################
+
+genetic_subcortical_structures<- merge(merge_genetic,subcortical_structures,by=c("aln","qlet"))
+genetic_cortical_structures <- merge(merge_genetic,cortical_structures,by=c("aln","qlet"))
+
+
+############################################################################################################################################
+##filter dataset to include complete data to be used in regression models
+############################################################################################################################################
+genetic_cortical_structures2 <- genetic_cortical_structures[!is.na(genetic_cortical_structures$sex) & !is.na(genetic_cortical_structures$age_months) & !is.na(genetic_cortical_structures$PC1)]
+genetic_subcortical_structures2 <- genetic_subcortical_structures[!is.na(genetic_subcortical_structures$sex) & !is.na(genetic_subcortical_structures$age_months) & !is.na(genetic_subcortical_structures$PC1)]
+descriptive_stats_cortical_thickness <- pairwiseCount(genetic_cortical_structures2[,c(9:33)],genetic_cortical_structures2[,c(49:83)])
+descriptive_stats_cortical_thickness <- t(descriptive_stats_cortical_thickness)
+descriptive_stats_cortical_thickness_reshaped <-setNames(melt(descriptive_stats_cortical_thickness),c('Outcome','SNP','N'))
+write.table(descriptive_stats_cortical_thickness_reshaped,"~/BRAIN_ANALYSES/ALSPAC/DATA/Descriptive_statistics/descriptive_stats_cortical_alspac_sample_withoutpsych.csv",row.names=FALSE, quote=FALSE,sep=",")
+
+descriptive_stats_subcortical_structures <- pairwiseCount(genetic_subcortical_structures2[,c(49:57)],genetic_subcortical_structures2[,c(9:33)])
+descriptive_stats_subcortical_structures <- t(descriptive_stats_subcortical_structures)
+descriptive_stats_subcortical_structures_reshaped <-setNames(melt(descriptive_stats_subcortical_structures),c('SNP','Outcome','N'))
+write.table(descriptive_stats_subcortical_structures_reshaped,"~/BRAIN_ANALYSES/ALSPAC/DATA/Descriptive_statistics/descriptive_stats_subcortical_alspac_sample_withoutpsych.csv",row.names=FALSE, quote=FALSE,sep=",")
+
+############################################################################################################################################
+##remove (/ from rsids)
+############################################################################################################################################
+
+names(genetic_cortical_structures) <- gsub("\\(..)", "",names(genetic_cortical_structures))
+names(genetic_subcortical_structures) <- gsub("\\(..)", "", names(genetic_subcortical_structures))
+names(sample_size) <- gsub("\\(..)", "", names(sample_size))
+
+#############################################################################################################################################
+##SET GWAS DIRECTORY
+############################################################################################################################################
+setwd("~/BRAIN_ANALYSES/ALSPAC/DATA/BRAIN_GWAS/")
+
+############################################################################################################################################
+#Define independent, dependent and covariate variables
+############################################################################################################################################
+ivs_vec <- names(genetic_cortical_structures)[9:33]
+dvs_vec <- names(genetic_cortical_structures)[c(49:83)]
+covs_vec <- paste("age_months","+","thickness_standardised","+","sex","+","PC1","+","PC2","+","PC3","+","PC4","+","PC5")
+
+ivs <- paste0(" ~ ", ivs_vec,"+",covs_vec)
+dvs_ivs <- unlist(lapply(ivs, function(x) paste0(dvs_vec, x))) ##given a list x, unlist simplifies to produce a vector
+formulas <- lapply(dvs_ivs, formula)
+
+#############################################################################################################################################
+##RUN REGRESSION MODELS
+#############################################################################################################################################
+
+lm_results <- lapply(formulas, function(x) {
+  lm(x, data=genetic_cortical_structures)
+})
+
+# Creating / combining results
+tidy_results <- lapply(lm_results, broom::tidy)
+dv_list <- as.list(stringi::stri_extract_first_words(dvs_ivs))
+tidy_results <- Map(cbind, dv_list, tidy_results)
+
+#################################################################################################################
+# subset results just for MR
+#################################################################################################################
+
+x <- lapply(tidy_results,"[",2,,drop=FALSE)
+rs_identifiers <- Map(cbind,dv_list,x)
+rs <- Map(as.data.frame,rs_identifiers)
+dfrData_rs <- rbindlist(rs,use.names=FALSE); 
+dfrData_rs$`dots[[1L]][[1L]]`<-NULL
+colnames(dfrData_rs) <- c("Outcome", "SNP", "BETA", "SE", "Statistic", "P")
+combined_results <- dfrData_rs
+alzheimers_alleles <- read_excel("~/BRAIN_ANALYSES/ALSPAC/DATA/ALZHEIMERS_GWAS/alzheimers_allele_assignments_use.xls")
+sample_size <- read.csv("~/BRAIN_ANALYSES/ALSPAC/DATA/Descriptive_statistics/descriptive_stats_cortical_alspac_sample_withoutpsych.csv")
+sample_size$SNP<- sub("_[^_]+$", "",sample_size$SNP)
+mr_dataset <- merge(combined_results,alzheimers_alleles,by.x="SNP",by.y="ID")
+mr_dataset <- mr_dataset[,c(1:7,10:12)]
+colnames(mr_dataset) <- c("Term","Outcome","BETA","SE","Statistic","P","SNP","A1","A2","EAF")
+mr_dataset <- merge(mr_dataset,sample_size,by.x=c("SNP","Outcome"),by.y=c("SNP","Outcome"))
+mr_dataset<- mr_dataset[order(mr_dataset$Outcome),]
+setwd("~/BRAIN_ANALYSES/ALSPAC/DATA/BRAIN_GWAS/")
+by(mr_dataset, mr_dataset$Outcome, FUN=function(i) write.table(i, paste0(i$Outcome[1], "_withoutpsych.txt"),quote = FALSE,row.names = FALSE))
+
+
+#################################################################################################################
+#SET DIRECTORY WHERE TO STORE BRAIN GWAS
+#################################################################################################################
+
+setwd("~/BRAIN_ANALYSES/ALSPAC/DATA/BRAIN_GWAS")
+rm(ivs_vec)
+rm(dvs_vec)
+
+
+#################################################################################################################
+##RUN REGRESSION MODELS FOR SUBCORTICAL STRUCTURES
+#################################################################################################################
+ivs_vec <- names(genetic_subcortical_structures)[9:33]
+dvs_vec <- names(genetic_subcortical_structures)[49:57]
+covs_vec <- paste("age_months","+","icv_standardised","+","sex","+","PC1","+","PC2","+","PC3","+","PC4","+","PC5")
+
+ivs <- paste0(" ~ ", ivs_vec,"+",covs_vec)
+dvs_ivs <- unlist(lapply(ivs, function(x) paste0(dvs_vec, x))) ##given a list x, unlist simplifies to produce a vector
+formulas <- lapply(dvs_ivs, formula)
+
+lm_results <- lapply(formulas, function(x) {
+  lm(x, data=genetic_subcortical_structures)
+})
+
+############################################################################################################################################
+# Creating / combining results
+############################################################################################################################################
+
+tidy_results <- lapply(lm_results, broom::tidy)
+dv_list <- as.list(stringi::stri_extract_first_words(dvs_ivs))
+tidy_results <- Map(cbind, dv_list, tidy_results)
+
+############################################################################################################################################
+# subset results just for MR
+############################################################################################################################################
+
+x <- lapply(tidy_results,"[",2,,drop=FALSE)
+rs_identifiers <- Map(cbind,dv_list,x)
+rs <- Map(as.data.frame,rs_identifiers)
+dfrData_rs <- rbindlist(rs,use.names = F); 
+dfrData_rs$`dots[[1L]][[1L]]`<-NULL
+colnames(dfrData_rs) <- c("Outcome", "SNP", "BETA", "SE", "Statistic", "P")
+combined_results <- dfrData_rs
+alzheimers_alleles <- read_excel("~/BRAIN_ANALYSES/ALSPAC/DATA/ALZHEIMERS_GWAS/alzheimers_allele_assignments_use.xls")
+sample_size <- read.csv("~/BRAIN_ANALYSES/ALSPAC/DATA/Descriptive_statistics/descriptive_stats_subcortical_alspac_sample_withoutpsych.csv")
+sample_size$SNP<- sub("_[^_]+$", "",sample_size$SNP)
+mr_dataset <- merge(combined_results,alzheimers_alleles,by.x="SNP",by.y="ID")
+mr_dataset <- mr_dataset[,c(1:7,10:12)]
+colnames(mr_dataset) <- c("Term","Outcome","BETA","SE","Statistic","P","SNP","A1","A2","EAF")
+mr_dataset<- mr_dataset[order(mr_dataset$Outcome),]
+mr_dataset <- merge(mr_dataset,sample_size,by.x=c("SNP","Outcome"),by.y=c("SNP","Outcome"))
+setwd("~/BRAIN_ANALYSES/ALSPAC/DATA/BRAIN_GWAS/")
+by(mr_dataset, mr_dataset$Outcome, FUN=function(i) write.table(i, paste0(i$Outcome[1], "_withoutpsych.txt"),quote = F,row.names = F))
+
